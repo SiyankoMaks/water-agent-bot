@@ -6,16 +6,41 @@ from urllib.parse import quote
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from openai import OpenAI
 
 # --- ENV ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_KEY")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-client = OpenAI(api_key=OPENAI_KEY)
+
+# ---------- Генерация ключевых слов ----------
+def extract_keywords(texts):
+    keywords = [
+        "water dissociation",
+        "water splitting",
+        "recombination",
+        "electrodialysis",
+        "ion exchange membrane",
+        "bipolar membrane",
+        "electroconvection",
+        "proton transport",
+        "hydroxyl ions",
+        "ion transport",
+        "membrane processes"
+    ]
+    
+    found = set()
+    
+    for text in texts:
+        if not text:
+            continue
+        text_lower = text.lower()
+        for kw in keywords:
+            if kw in text_lower:
+                found.add(kw)
+    
+    return list(found)
 
 
 # ---------- Улучшение запроса ----------
@@ -23,10 +48,37 @@ def improve_query(user_query):
     return f"({user_query}) AND (membrane OR electrodialysis OR ion exchange) AND (water dissociation OR recombination)"
 
 
+# ---------- Проверка релевантности ----------
+def is_relevant(text):
+    text = text.lower()
+    
+    keywords = [
+        "membrane",
+        "electrodialysis",
+        "ion exchange",
+        "water dissociation",
+        "recombination",
+        "bipolar membrane"
+    ]
+    
+    score = sum(1 for k in keywords if k in text)
+    
+    return score >= 2
+
+
+# ---------- Простое саммари ----------
+def simple_summary(text):
+    if not text:
+        return "Нет аннотации"
+    
+    text = text.replace("\n", " ").strip()
+    return text[:500] + "..."
+
+
 # ---------- arXiv ----------
 def search_arxiv(query):
     encoded_query = quote(query)
-    url = f"http://export.arxiv.org/api/query?search_query=all:{encoded_query}&max_results=3"
+    url = f"http://export.arxiv.org/api/query?search_query=all:{encoded_query}&max_results=5"
     
     feed = feedparser.parse(url)
     
@@ -47,7 +99,7 @@ def search_crossref(query):
     
     params = {
         "query": query,
-        "rows": 3
+        "rows": 5
     }
     
     r = requests.get(url, params=params)
@@ -58,39 +110,11 @@ def search_crossref(query):
     for item in data.get("message", {}).get("items", []):
         papers.append({
             "title": item.get("title", [""])[0],
-            "doi": item.get("DOI"),
-            "abstract": item.get("abstract", "")
+            "abstract": item.get("abstract", ""),
+            "doi": item.get("DOI")
         })
     
     return papers
-
-
-# ---------- GPT ----------
-def summarize(text):
-    if not text:
-        return "Нет аннотации"
-    
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": f"""
-Сделай краткий научный разбор статьи:
-- суть работы
-- есть ли диссоциация воды
-- теория или эксперимент
-- ключевой результат
-
-И переведи на русский:
-
-{text}
-"""
-            }
-        ]
-    )
-    
-    return response.choices[0].message.content
 
 
 # ---------- Telegram ----------
@@ -99,8 +123,9 @@ def summarize(text):
 async def start(msg: types.Message):
     await msg.answer(
         "Привет! Я научный агент 🔬\n\n"
+        "Ищу статьи по электромембранным системам\n\n"
         "Напиши:\n/search ключевые слова\n\n"
-        "Пример:\n/search water dissociation electrodialysis"
+        "Пример:\n/search water dissociation"
     )
 
 
@@ -114,32 +139,32 @@ async def search(msg: types.Message):
     
     await msg.answer("🔍 Ищу научные статьи...")
     
-    # улучшение запроса
     query = improve_query(user_query)
     
     results = []
+    texts_for_keywords = []
     
     # --- arXiv ---
     try:
-        arxiv_papers = search_arxiv(query)
-        for p in arxiv_papers:
+        for p in search_arxiv(query):
             results.append({
                 "title": p["title"],
                 "text": p["summary"],
                 "link": p["link"]
             })
+            texts_for_keywords.append(p["summary"])
     except Exception as e:
         print("arXiv error:", e)
     
     # --- CrossRef ---
     try:
-        cross_papers = search_crossref(query)
-        for p in cross_papers:
+        for p in search_crossref(query):
             results.append({
                 "title": p["title"],
                 "text": p["abstract"],
                 "link": f"https://doi.org/{p['doi']}" if p["doi"] else ""
             })
+            texts_for_keywords.append(p["abstract"])
     except Exception as e:
         print("CrossRef error:", e)
     
@@ -147,16 +172,33 @@ async def search(msg: types.Message):
         await msg.answer("Ничего не найдено 😢")
         return
     
+    # --- Ключевые слова ---
+    keywords = extract_keywords(texts_for_keywords)
+    
+    if keywords:
+        kw_text = "\n".join(f"- {k}" for k in keywords)
+        await msg.answer(f"🧠 Рекомендуемые ключевые слова:\n{kw_text}")
+    
+    # --- Фильтрация ---
+    filtered = []
+    for p in results:
+        if is_relevant(p["text"] or p["title"]):
+            filtered.append(p)
+    
+    if not filtered:
+        filtered = results[:5]
+    
     # --- Ответ ---
-    for p in results[:5]:
-        summary = summarize(p["text"])
+    for p in filtered[:5]:
+        summary = simple_summary(p["text"])
         
         text = f"""
 📄 {p['title']}
 
 🔗 {p['link']}
 
-🧠 {summary}
+📌 Аннотация:
+{summary}
 """
         await msg.answer(text)
 
