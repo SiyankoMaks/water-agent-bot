@@ -2,11 +2,13 @@ import os
 import asyncio
 import requests
 import feedparser
+from urllib.parse import quote
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from openai import OpenAI
 
+# --- ENV ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_KEY = os.getenv("OPENAI_KEY")
 
@@ -15,9 +17,17 @@ dp = Dispatcher()
 
 client = OpenAI(api_key=OPENAI_KEY)
 
+
+# ---------- Улучшение запроса ----------
+def improve_query(user_query):
+    return f"({user_query}) AND (membrane OR electrodialysis OR ion exchange) AND (water dissociation OR recombination)"
+
+
 # ---------- arXiv ----------
 def search_arxiv(query):
-    url = f"http://export.arxiv.org/api/query?search_query=all:{query}&max_results=3"
+    encoded_query = quote(query)
+    url = f"http://export.arxiv.org/api/query?search_query=all:{encoded_query}&max_results=3"
+    
     feed = feedparser.parse(url)
     
     papers = []
@@ -45,7 +55,7 @@ def search_crossref(query):
     
     papers = []
     
-    for item in data["message"]["items"]:
+    for item in data.get("message", {}).get("items", []):
         papers.append({
             "title": item.get("title", [""])[0],
             "doi": item.get("DOI"),
@@ -63,8 +73,10 @@ def summarize(text):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "user", "content": f"""
-Сделай краткий научный разбор:
+            {
+                "role": "user",
+                "content": f"""
+Сделай краткий научный разбор статьи:
 - суть работы
 - есть ли диссоциация воды
 - теория или эксперимент
@@ -73,7 +85,8 @@ def summarize(text):
 И переведи на русский:
 
 {text}
-"""}
+"""
+            }
         ]
     )
     
@@ -84,40 +97,57 @@ def summarize(text):
 
 @dp.message(Command("start"))
 async def start(msg: types.Message):
-    await msg.answer("Привет! Напиши:\n/search ключевые слова")
+    await msg.answer(
+        "Привет! Я научный агент 🔬\n\n"
+        "Напиши:\n/search ключевые слова\n\n"
+        "Пример:\n/search water dissociation electrodialysis"
+    )
 
 
 @dp.message(Command("search"))
 async def search(msg: types.Message):
-    query = msg.text.replace("/search", "").strip()
+    user_query = msg.text.replace("/search", "").strip()
     
-    if not query:
+    if not user_query:
         await msg.answer("Напиши так:\n/search water dissociation membrane")
         return
     
-    await msg.answer("🔍 Ищу статьи...")
+    await msg.answer("🔍 Ищу научные статьи...")
+    
+    # улучшение запроса
+    query = improve_query(user_query)
     
     results = []
     
-    # arXiv
-    arxiv_papers = search_arxiv(query)
-    for p in arxiv_papers:
-        results.append({
-            "title": p["title"],
-            "text": p["summary"],
-            "link": p["link"]
-        })
+    # --- arXiv ---
+    try:
+        arxiv_papers = search_arxiv(query)
+        for p in arxiv_papers:
+            results.append({
+                "title": p["title"],
+                "text": p["summary"],
+                "link": p["link"]
+            })
+    except Exception as e:
+        print("arXiv error:", e)
     
-    # CrossRef
-    cross_papers = search_crossref(query)
-    for p in cross_papers:
-        results.append({
-            "title": p["title"],
-            "text": p["abstract"],
-            "link": f"https://doi.org/{p['doi']}" if p["doi"] else ""
-        })
+    # --- CrossRef ---
+    try:
+        cross_papers = search_crossref(query)
+        for p in cross_papers:
+            results.append({
+                "title": p["title"],
+                "text": p["abstract"],
+                "link": f"https://doi.org/{p['doi']}" if p["doi"] else ""
+            })
+    except Exception as e:
+        print("CrossRef error:", e)
     
-    # Ответ
+    if not results:
+        await msg.answer("Ничего не найдено 😢")
+        return
+    
+    # --- Ответ ---
     for p in results[:5]:
         summary = summarize(p["text"])
         
