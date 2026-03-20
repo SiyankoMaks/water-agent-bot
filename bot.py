@@ -1,15 +1,17 @@
 import os
+import asyncio
 import requests
 import feedparser
+
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
+from aiogram.filters import Command
 from openai import OpenAI
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_KEY = os.getenv("OPENAI_KEY")
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher()
 
 client = OpenAI(api_key=OPENAI_KEY)
 
@@ -61,7 +63,17 @@ def summarize(text):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "user", "content": f"Сделай краткий научный саммари и перевод на русский:\n{text}"}
+            {"role": "user", "content": f"""
+Сделай краткий научный разбор:
+- суть работы
+- есть ли диссоциация воды
+- теория или эксперимент
+- ключевой результат
+
+И переведи на русский:
+
+{text}
+"""}
         ]
     )
     
@@ -69,14 +81,15 @@ def summarize(text):
 
 
 # ---------- Telegram ----------
-@dp.message_handler(commands=["start"])
+
+@dp.message(Command("start"))
 async def start(msg: types.Message):
     await msg.answer("Привет! Напиши:\n/search ключевые слова")
 
 
-@dp.message_handler(commands=["search"])
+@dp.message(Command("search"))
 async def search(msg: types.Message):
-    query = msg.get_args()
+    query = msg.text.replace("/search", "").strip()
     
     if not query:
         await msg.answer("Напиши так:\n/search water dissociation membrane")
@@ -118,5 +131,11 @@ async def search(msg: types.Message):
         await msg.answer(text)
 
 
+# ---------- запуск ----------
+
+async def main():
+    await dp.start_polling(bot)
+
+
 if __name__ == "__main__":
-    executor.start_polling(dp)
+    asyncio.run(main())
