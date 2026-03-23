@@ -2,6 +2,7 @@ import os
 import asyncio
 import requests
 import feedparser
+import re
 from urllib.parse import quote
 
 from aiogram import Bot, Dispatcher, types
@@ -12,6 +13,22 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+
+# ---------- Проверка запроса ----------
+def is_water_query(query):
+    water_keywords = [
+        "water",
+        "membrane",
+        "electrodialysis",
+        "ion exchange",
+        "bipolar",
+        "dissociation",
+        "recombination"
+    ]
+    
+    query = query.lower()
+    return any(k in query for k in water_keywords)
 
 
 # ---------- Генерация ключевых слов ----------
@@ -45,25 +62,36 @@ def extract_keywords(texts):
 
 # ---------- Улучшение запроса ----------
 def improve_query(user_query):
-    return f"({user_query}) AND (membrane OR electrodialysis OR ion exchange) AND (water dissociation OR recombination)"
+    return f"({user_query}) AND (water OR membrane OR electrodialysis OR ion exchange)"
 
 
 # ---------- Проверка релевантности ----------
 def is_relevant(text):
+    if not text:
+        return False
+    
     text = text.lower()
     
     keywords = [
+        "water",
         "membrane",
         "electrodialysis",
         "ion exchange",
-        "water dissociation",
-        "recombination",
-        "bipolar membrane"
+        "bipolar",
+        "dissociation",
+        "recombination"
     ]
     
     score = sum(1 for k in keywords if k in text)
     
     return score >= 2
+
+
+# ---------- Очистка HTML ----------
+def clean_html(text):
+    if not text:
+        return ""
+    return re.sub('<.*?>', '', text)
 
 
 # ---------- Простое саммари ----------
@@ -110,7 +138,7 @@ def search_crossref(query):
     for item in data.get("message", {}).get("items", []):
         papers.append({
             "title": item.get("title", [""])[0],
-            "abstract": item.get("abstract", ""),
+            "abstract": clean_html(item.get("abstract", "")),
             "doi": item.get("DOI")
         })
     
@@ -121,33 +149,13 @@ def search_crossref(query):
 # ---------- TOOLS -------------
 # ==============================
 
-def tool_search_arxiv(query):
-    return search_arxiv(query)
-
-
-def tool_search_crossref(query):
-    return search_crossref(query)
-
-
-def tool_filter_relevant(papers):
-    filtered = []
-    for p in papers:
-        if is_relevant(p["text"] or p["title"]):
-            filtered.append(p)
-    return filtered
-
-
-def tool_extract_keywords(texts):
-    return extract_keywords(texts)
-
-
 def tool_search_all(query):
     results = []
     texts = []
     
     # arXiv
     try:
-        for p in tool_search_arxiv(query):
+        for p in search_arxiv(query):
             results.append({
                 "title": p["title"],
                 "text": p["summary"],
@@ -159,7 +167,7 @@ def tool_search_all(query):
     
     # CrossRef
     try:
-        for p in tool_search_crossref(query):
+        for p in search_crossref(query):
             results.append({
                 "title": p["title"],
                 "text": p["abstract"],
@@ -172,6 +180,10 @@ def tool_search_all(query):
     return results, texts
 
 
+def tool_filter_relevant(papers):
+    return [p for p in papers if is_relevant(p["text"] or p["title"])]
+
+
 # ==============================
 # ---------- TELEGRAM ----------
 # ==============================
@@ -179,10 +191,12 @@ def tool_search_all(query):
 @dp.message(Command("start"))
 async def start(msg: types.Message):
     await msg.answer(
-        "Привет! Я научный агент 🔬\n\n"
-        "Теперь я работаю как система инструментов (tools)\n\n"
-        "Напиши:\n/search ключевые слова\n\n"
-        "Пример:\n/search water dissociation"
+        "Привет! Я научный агент по электромембранным системам 🔬\n\n"
+        "Работаю только с темами:\n"
+        "- water dissociation\n"
+        "- membranes\n"
+        "- electrodialysis\n\n"
+        "Напиши:\n/search ключевые слова"
     )
 
 
@@ -194,31 +208,39 @@ async def search(msg: types.Message):
         await msg.answer("Напиши так:\n/search water dissociation membrane")
         return
     
-    await msg.answer("🔍 Агент работает...")
+    # ❗ Проверка тематики
+    if not is_water_query(user_query):
+        await msg.answer(
+            "❌ Я работаю только с темами воды и мембран\n\n"
+            "Попробуй:\n/search water dissociation membrane"
+        )
+        return
+    
+    await msg.answer("🔍 Ищу научные статьи...")
     
     query = improve_query(user_query)
     
-    # --- TOOL: поиск ---
     results, texts = tool_search_all(query)
     
     if not results:
         await msg.answer("Ничего не найдено 😢")
         return
     
-    # --- TOOL: ключевые слова ---
-    keywords = tool_extract_keywords(texts)
+    # ключевые слова
+    keywords = extract_keywords(texts)
     
     if keywords:
         kw_text = "\n".join(f"- {k}" for k in keywords)
         await msg.answer(f"🧠 Рекомендуемые ключевые слова:\n{kw_text}")
     
-    # --- TOOL: фильтр ---
+    # фильтр
     filtered = tool_filter_relevant(results)
     
     if not filtered:
-        filtered = results[:5]
+        await msg.answer("Не удалось найти релевантные статьи 😢")
+        return
     
-    # --- ответ ---
+    # ответ
     for p in filtered[:5]:
         summary = simple_summary(p["text"])
         
