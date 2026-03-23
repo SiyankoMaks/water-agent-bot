@@ -117,13 +117,70 @@ def search_crossref(query):
     return papers
 
 
-# ---------- Telegram ----------
+# ==============================
+# ---------- TOOLS -------------
+# ==============================
+
+def tool_search_arxiv(query):
+    return search_arxiv(query)
+
+
+def tool_search_crossref(query):
+    return search_crossref(query)
+
+
+def tool_filter_relevant(papers):
+    filtered = []
+    for p in papers:
+        if is_relevant(p["text"] or p["title"]):
+            filtered.append(p)
+    return filtered
+
+
+def tool_extract_keywords(texts):
+    return extract_keywords(texts)
+
+
+def tool_search_all(query):
+    results = []
+    texts = []
+    
+    # arXiv
+    try:
+        for p in tool_search_arxiv(query):
+            results.append({
+                "title": p["title"],
+                "text": p["summary"],
+                "link": p["link"]
+            })
+            texts.append(p["summary"])
+    except Exception as e:
+        print("arXiv error:", e)
+    
+    # CrossRef
+    try:
+        for p in tool_search_crossref(query):
+            results.append({
+                "title": p["title"],
+                "text": p["abstract"],
+                "link": f"https://doi.org/{p['doi']}" if p["doi"] else ""
+            })
+            texts.append(p["abstract"])
+    except Exception as e:
+        print("CrossRef error:", e)
+    
+    return results, texts
+
+
+# ==============================
+# ---------- TELEGRAM ----------
+# ==============================
 
 @dp.message(Command("start"))
 async def start(msg: types.Message):
     await msg.answer(
         "Привет! Я научный агент 🔬\n\n"
-        "Ищу статьи по электромембранным системам\n\n"
+        "Теперь я работаю как система инструментов (tools)\n\n"
         "Напиши:\n/search ключевые слова\n\n"
         "Пример:\n/search water dissociation"
     )
@@ -137,58 +194,31 @@ async def search(msg: types.Message):
         await msg.answer("Напиши так:\n/search water dissociation membrane")
         return
     
-    await msg.answer("🔍 Ищу научные статьи...")
+    await msg.answer("🔍 Агент работает...")
     
     query = improve_query(user_query)
     
-    results = []
-    texts_for_keywords = []
-    
-    # --- arXiv ---
-    try:
-        for p in search_arxiv(query):
-            results.append({
-                "title": p["title"],
-                "text": p["summary"],
-                "link": p["link"]
-            })
-            texts_for_keywords.append(p["summary"])
-    except Exception as e:
-        print("arXiv error:", e)
-    
-    # --- CrossRef ---
-    try:
-        for p in search_crossref(query):
-            results.append({
-                "title": p["title"],
-                "text": p["abstract"],
-                "link": f"https://doi.org/{p['doi']}" if p["doi"] else ""
-            })
-            texts_for_keywords.append(p["abstract"])
-    except Exception as e:
-        print("CrossRef error:", e)
+    # --- TOOL: поиск ---
+    results, texts = tool_search_all(query)
     
     if not results:
         await msg.answer("Ничего не найдено 😢")
         return
     
-    # --- Ключевые слова ---
-    keywords = extract_keywords(texts_for_keywords)
+    # --- TOOL: ключевые слова ---
+    keywords = tool_extract_keywords(texts)
     
     if keywords:
         kw_text = "\n".join(f"- {k}" for k in keywords)
         await msg.answer(f"🧠 Рекомендуемые ключевые слова:\n{kw_text}")
     
-    # --- Фильтрация ---
-    filtered = []
-    for p in results:
-        if is_relevant(p["text"] or p["title"]):
-            filtered.append(p)
+    # --- TOOL: фильтр ---
+    filtered = tool_filter_relevant(results)
     
     if not filtered:
         filtered = results[:5]
     
-    # --- Ответ ---
+    # --- ответ ---
     for p in filtered[:5]:
         summary = simple_summary(p["text"])
         
